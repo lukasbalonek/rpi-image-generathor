@@ -19,9 +19,9 @@ or you can write `rpi-image-armel.img.xz` with software like \
 Rufus (https://rufus.ie/en/) or Raspberry Imager (https://www.raspberrypi.com/software/)
 
 ### Grow system partition to fit SD card capacity
-Install packages for `fdisk`, `resize2fs` and `growpart`:
+Install packages for `resize2fs` and `growpart`:
 ```
-apt -yq install fdisk e2fsprogs cloud-guest-utils
+apt -yq install e2fsprogs cloud-guest-utils
 ```
 Grow partition:
 ```
@@ -50,8 +50,10 @@ in `/boot/firmware/cmdline.txt` and your system will not boot until you change i
 To enable Read-Only Ramdisk Overlay, use:
 ```
 echo 1 > /boot/firmware/overlay.txt
+update-initramfs-overlay
 ```
 To disable, use:
 ```
 echo 0 > /boot/firmware/overlay.txt
+update-initramfs-overlay
 ```
