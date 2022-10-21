@@ -49,11 +49,9 @@ in `/boot/firmware/cmdline.txt` and your system will not boot until you change i
 #### Read-Only ramdisk Overlay
 To enable Read-Only Ramdisk Overlay, use:
 ```
-echo 1 > /boot/firmware/overlay.txt
-update-initramfs-overlay
+echo 1 > /boot/overlay.txt
 ```
 To disable, use:
 ```
-echo 0 > /boot/firmware/overlay.txt
-update-initramfs-overlay
+echo 0 > /boot/overlay.txt
 ```
