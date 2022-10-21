@@ -1,8 +1,8 @@
 #!/bin/bash
 # created by Lukas Balonek (lukas.balonek@gmail.com)
 bh=/dev/null
-mountpoint=/tmp/rpi-image-build
-imgsize=8192
+MOUNTPOINT=/tmp/rpi-image-build
+IMGSIZE=4096
 CPU_CORES=$(grep -c '^processor' /proc/cpuinfo)
 APT_PREREQS="binfmt-support qemu-user-static debootstrap dosfstools xz-utils fdisk coreutils sed"
 
@@ -133,15 +133,15 @@ echo ':arm:M::\x7fELF\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x2
 set -e
 
 echo -e "\e[33mCreating blank image\e[m"
-dd if=/dev/zero bs=1M count=$imgsize status=progress of=$imgname
+dd if=/dev/zero bs=1M count=$IMGSIZE status=progress of=$imgname
 
 echo -e "\e[33mConnecting image to loop device\e[m"
 losetup --partscan --find $imgname
-lodevice=$(losetup --list | grep $imgname | awk '{print $1}')
-echo "loopback device is: $lodevice"
+disk_device=$(losetup --list | grep $imgname | awk '{print $1}')
+echo "Disk device is: $disk_device"
 
-echo -e "\e[33mFormatting $lodevice\e[m"
-fdisk 1>$bh $lodevice << EOF
+echo -e "\e[33mFormatting $disk_device\e[m"
+fdisk 1>$bh $disk_device << EOF
 o
 n
 p
@@ -158,29 +158,29 @@ p
 w
 EOF
 
-mkfs.vfat -F 32 "$lodevice"p1
-mkfs.ext4 -F "$lodevice"p2
+mkfs.vfat -F 32 "$disk_device"p1
+mkfs.ext4 -F "$disk_device"p2
 
 echo -e "\e[33mConnecting partitions\e[m"
-mkdir -p $mountpoint
-mount -v "$lodevice"p2 $mountpoint
-mkdir -p $mountpoint/boot/firmware
-mount -v "$lodevice"p1 $mountpoint/boot/firmware
+mkdir -p $MOUNTPOINT
+mount -v "$disk_device"p2 $MOUNTPOINT
+mkdir -p $MOUNTPOINT/boot/firmware
+mount -v "$disk_device"p1 $MOUNTPOINT/boot/firmware
 
 echo -e "\e[33mInstalling system with debootstrap - STAGE 1\e[m"
-debootstrap --variant=minbase --foreign --arch $arch stable $mountpoint http://deb.debian.org/debian
+debootstrap --variant=minbase --foreign --arch $arch stable $MOUNTPOINT http://deb.debian.org/debian
 
-echo -e "\e[33mCopying qemu-arm-static into $mountpoint/usr/bin to make chroot possible\e[m"
-cp -fv $(which qemu-arm-static) $mountpoint/usr/bin/
+echo -e "\e[33mCopying qemu-arm-static into $MOUNTPOINT/usr/bin to make chroot possible\e[m"
+cp -fv $(which qemu-arm-static) $MOUNTPOINT/usr/bin/
 
 echo -e "\e[33mInstalling system with debootstrap - STAGE 2\e[m"
-mount -v --bind /proc $mountpoint/proc
-mount -v --bind /sys $mountpoint/sys
-chroot $mountpoint /debootstrap/debootstrap --second-stage
+mount -v --bind /proc $MOUNTPOINT/proc
+mount -v --bind /sys $MOUNTPOINT/sys
+chroot $MOUNTPOINT /debootstrap/debootstrap --second-stage
 
 echo -e "\e[33mSetting APT\e[m"
-echo deb http://deb.debian.org/debian stable main contrib non-free > $mountpoint/etc/apt/sources.list
-chroot $mountpoint apt -yqq update
+echo deb http://deb.debian.org/debian stable main contrib non-free > $MOUNTPOINT/etc/apt/sources.list
+chroot $MOUNTPOINT apt -yqq update
 
 echo -e "\e[33mInstalling linux-image for $arch\e[m"
 case $arch in
@@ -197,10 +197,10 @@ pkg_name=linux-image-arm64
 # linux-image-arm64 - Linux for 64-bit ARMv8 machines
 ;;
 esac
-chroot $mountpoint /bin/bash -c "declare -x DEBIAN_FRONTEND=noninteractive; apt install -yqq $pkg_name"
+chroot $MOUNTPOINT /bin/bash -c "declare -x DEBIAN_FRONTEND=noninteractive; apt install -yqq $pkg_name"
 
 echo -e "\e[33mInstalling important packages\e[m"
-chroot $mountpoint /bin/bash -c "
+chroot $MOUNTPOINT /bin/bash -c "
   declare -x DEBIAN_FRONTEND=noninteractive; \
   apt install -yq locales `# GNU C Library: National Language (locale) data [support]` \
   init `# init system` \
@@ -214,68 +214,70 @@ chroot $mountpoint /bin/bash -c "
 "
 
 echo -e "\e[33mInstalling must-have packages\e[m"
-chroot $mountpoint /bin/bash -c "
+chroot $MOUNTPOINT /bin/bash -c "
   declare -x DEBIAN_FRONTEND=noninteractive; \
   apt install -yq locales `# GNU C Library: National Language (locale) data [support]` \
   htop iftop iotop nload `# monitoring tools` \
   tree mc `# file manager tools` \
-  nano `# small, friendly text editor inspired by Pico`
+  nano `# small, friendly text editor inspired by Pico` \
+  e2fsprogs `# ext2/ext3/ext4 file system utilities` \
+  cloud-guest-utils `# It contains growpart for resizing a partition during boot`
 "
 
 echo -e "\e[33mSetting locales\e[m"
-echo LANGUAGE=en_US:en > $mountpoint/etc/default/locale
-echo LANG=en_US.UTF-8 >> $mountpoint/etc/default/locale
-echo LC=en_US.UTF-8 >> $mountpoint/etc/default/locale
-sed -i 's@.*# cs_CZ.UTF-8 UTF-8@cs_CZ.UTF-8 UTF-8@g' $mountpoint/etc/locale.gen
-sed -i 's@.*# en_US.UTF-8 UTF-8@en_US.UTF-8 UTF-8@g' $mountpoint/etc/locale.gen
-chroot $mountpoint locale-gen
+echo LANGUAGE=en_US:en > $MOUNTPOINT/etc/default/locale
+echo LANG=en_US.UTF-8 >> $MOUNTPOINT/etc/default/locale
+echo LC=en_US.UTF-8 >> $MOUNTPOINT/etc/default/locale
+sed -i 's@.*# cs_CZ.UTF-8 UTF-8@cs_CZ.UTF-8 UTF-8@g' $MOUNTPOINT/etc/locale.gen
+sed -i 's@.*# en_US.UTF-8 UTF-8@en_US.UTF-8 UTF-8@g' $MOUNTPOINT/etc/locale.gen
+chroot $MOUNTPOINT locale-gen
 
 echo -e "\e[33mSetting hostname\e[m"
-echo raspberry > $mountpoint/etc/hostname
+echo raspberry > $MOUNTPOINT/etc/hostname
 
 echo -e "\e[33mSetting fstab\e[m"
-cat > $mountpoint/etc/fstab << EOF
+cat > $MOUNTPOINT/etc/fstab << EOF
 /dev/mmcblk0p1 /boot/firmware vfat defaults 0 0
 /dev/mmcblk0p2 / ext4 defaults 0 0
 EOF
 
 echo -e "\e[33mSetting accounts\e[m"
 echo "Adding user pi with password malina"
-chroot $mountpoint /bin/bash -c "useradd -s /bin/bash --user-group --create-home pi"
-chroot $mountpoint /bin/bash -c "echo 'pi:malina' | chpasswd" ;
+chroot $MOUNTPOINT /bin/bash -c "useradd -s /bin/bash --user-group --create-home pi"
+chroot $MOUNTPOINT /bin/bash -c "echo 'pi:malina' | chpasswd" ;
 echo "Setting root password to linux"
-chroot $mountpoint /bin/bash -c "echo 'root:linux' | chpasswd" ;
+chroot $MOUNTPOINT /bin/bash -c "echo 'root:linux' | chpasswd" ;
 
 echo -e "\e[33mSetting sshd\e[m"
-mkdir -p $mountpoint/root/.ssh
-sed -i 's/^.*PermitRootLogin.*/PermitRootLogin yes/g' $mountpoint/etc/ssh/sshd_config
+mkdir -p $MOUNTPOINT/root/.ssh
+sed -i 's/^.*PermitRootLogin.*/PermitRootLogin yes/g' $MOUNTPOINT/etc/ssh/sshd_config
 
 echo -e "\e[33mSetting network\e[m"
 echo "Disable IPv6"
-echo 'net.ipv6.conf.eth0.disable_ipv6 = 1' > $mountpoint/etc/sysctl.d/99-disable-ipv6.conf
+echo 'net.ipv6.conf.eth0.disable_ipv6 = 1' > $MOUNTPOINT/etc/sysctl.d/99-disable-ipv6.conf
 echo "Set eth0 interface"
-cat > $mountpoint/etc/network/interfaces.d/eth0 << EOF
+cat > $MOUNTPOINT/etc/network/interfaces.d/eth0 << EOF
 auto eth0
 iface eth0 inet dhcp
 EOF
 
 echo -e "\e[33mSetting time (Prague - CZ timezone, NTP)\e[m"
-ln -snfr $mountpoint/usr/share/zoneinfo/Europe/Prague $mountpoint/etc/localtime
-cat > $mountpoint/etc/systemd/timesyncd.conf << EOF
+ln -snfr $MOUNTPOINT/usr/share/zoneinfo/Europe/Prague $MOUNTPOINT/etc/localtime
+cat > $MOUNTPOINT/etc/systemd/timesyncd.conf << EOF
 [Time]
 NTP=tik.cesnet.cz tak.cesnet.cz time.windows.com ntp.nic.cz europe.pool.ntp.org
 FallbackNTP=0.debian.pool.ntp.org 1.debian.pool.ntp.org 2.debian.pool.ntp.org 3.debian.pool.ntp.org
 PollIntervalMaxSec=1800
 PollIntervalMinSec=60
 EOF
-chroot $mountpoint /bin/bash -c "systemctl unmask systemd-timesyncd ; systemctl enable systemd-timesyncd"
+chroot $MOUNTPOINT /bin/bash -c "systemctl unmask systemd-timesyncd ; systemctl enable systemd-timesyncd"
 
 echo -e "\e[33mSetting crontab\e[m"
-touch $mountpoint/var/spool/cron/crontabs/root
-chmod 0600 $mountpoint/var/spool/cron/crontabs/root
+touch $MOUNTPOINT/var/spool/cron/crontabs/root
+chmod 0600 $MOUNTPOINT/var/spool/cron/crontabs/root
 
 echo -e "\e[33mSetting console message (/etc/issue)\e[m"
-cat > $mountpoint/etc/issue << EOF
+cat > $MOUNTPOINT/etc/issue << EOF
 OS: \S (\l)
 Hostname: \n
 IPv4: \4
@@ -283,12 +285,12 @@ EOF
 
 echo -e "\e[33mSetting Read-Only OverlayFS\e[m"
 echo "Adding overlay module into initramfs-tools/modules"
-lineinfile ^overlay.* overlay $mountpoint/etc/initramfs-tools/modules
+lineinfile ^overlay.* overlay $MOUNTPOINT/etc/initramfs-tools/modules
 
-echo "Disable OverlayFS by default (/boot/firmware/overlay.txt)"
-echo 0 > $mountpoint/boot/firmware/overlay.txt
+echo "Disable OverlayFS by default (/boot/overlay.txt)"
+echo 0 > $MOUNTPOINT/boot/overlay.txt
 echo "Adding post-<update-initramfs> script"
-cat > $mountpoint/usr/local/sbin/update-initramfs-overlay << EOF
+cat > $MOUNTPOINT/usr/local/sbin/update-initramfs-overlay << EOF
 #!/bin/bash
 set -e
 
@@ -299,19 +301,11 @@ set -e
 # in cmdline.txt and system wont survive reboot
 rootfs_device=$(grep " / " /etc/fstab | cut -d " " -f1)
 sed -i "s\ root=overlay \ root=\$rootfs_device \g" /boot/firmware/cmdline.txt
-
-# if overlay.txt on FAT32 partition contains 1, enable overlayfs
-if [ \$(cat /boot/firmware/overlay.txt) -eq 1 ]; then
-  echo "OverlayFS is enabled, configuring /boot/firmware/cmdline.txt"
-  sed -i "s/ rw / ro /g" /boot/firmware/cmdline.txt
-else
-  echo "OverlayFS is disabled.."
-fi
 EOF
-chmod +x $mountpoint/usr/local/sbin/update-initramfs-overlay
+chmod +x $MOUNTPOINT/usr/local/sbin/update-initramfs-overlay
 
 echo "Adding initramfs 01-overlay init-bottom script"
-cat > $mountpoint/etc/initramfs-tools/scripts/init-bottom/01-overlay << EOF
+cat > $MOUNTPOINT/etc/initramfs-tools/scripts/init-bottom/01-overlay << EOF
 set -e
 PREREQ=""
 prereqs(){
@@ -325,7 +319,7 @@ case "${1}" in
 esac
 
 echo
-if grep -qo " ro " /proc/cmdline ; then
+if [ \$(cat \${rootmnt}/boot/overlay.txt) -eq 1 ]; then
 
 echo -e "[overlay] Image is in Read-Only, executing overlayfs"
 
@@ -353,25 +347,25 @@ echo -e "[overlay] Image is in Read-Write, booting from ${root} mounted on ${roo
 
 fi
 EOF
-chmod +x $mountpoint/etc/initramfs-tools/scripts/init-bottom/01-overlay
+chmod +x $MOUNTPOINT/etc/initramfs-tools/scripts/init-bottom/01-overlay
 
 echo -e "\e[33mUpdating initramfs\e[m"
-chroot $mountpoint update-initramfs-overlay
+chroot $MOUNTPOINT update-initramfs-overlay
 
 echo -e "\e[33mDisconnecting partitions\e[m"
-umount -v $mountpoint/boot/firmware
-umount -v $mountpoint
+umount -v $MOUNTPOINT/boot/firmware
+umount -v $MOUNTPOINT
 
 echo -e "\e[33mDisconnecting image from loop device\e[m"
-losetup -d $lodevice
+losetup -d $disk_device
 
 echo -e "\e[33mCompressing image with xz\e[m"
 xz --compress -9 --threads=$CPU_CORES $imgname
 
 echo -e "\e[33mRemoving build folders\e[m"
-mount | grep $mountpoint && declare -i exit_value=0 || declare -i exit_value=1
+mount | grep $MOUNTPOINT && declare -i exit_value=0 || declare -i exit_value=1
 if [ $exit_value -eq 0 ]; then
-        error_msg="Something failed to unmount ! Not removing build folders: $mountpoint"
+        error_msg="Something failed to unmount ! Not removing build folders: $MOUNTPOINT"
         error
 else
         rm -rfv rpi-image-build
