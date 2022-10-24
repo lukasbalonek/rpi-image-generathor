@@ -53,20 +53,12 @@ function help {
 
 }
 
-function check_folder_writability {
-        if [ -n "$backup_folder" ]; then
-                if ! [ -w "$(dirname $backup_folder)" ]; then
-                        error_msg="Folder $backup_folder is not writable !"
-                        error
-                fi
-        fi
-}
-
 function lineinfile {
         # first arg is regexp, second line, third is file
-        grep -qE $1 $3 || declare -i exit_value=1
-        if [ $exit_value -eq 1 ]; then
-                printf $2 >> $3
+        declare -i lif_replace=0
+        grep -qE "$1" $3 || lif_replace=1
+        if [ $lif_replace -eq 1 ]; then
+                echo $2 >> $3
         else
                 sed -i "s/$1/$2/g" $3
         fi
@@ -98,7 +90,6 @@ for arg in $@; do
 done
 
 check_root
-check_folder_writability
 
 separathor
 echo -e " \e[92mWelcome to rpi-image-generathor ! \e[m"
@@ -245,12 +236,6 @@ chroot $MOUNTPOINT locale-gen
 echo -e "\e[33mSetting hostname\e[m"
 echo raspberry > $MOUNTPOINT/etc/hostname
 
-echo -e "\e[33mSetting fstab\e[m"
-cat > $MOUNTPOINT/etc/fstab << EOF
-/dev/mmcblk0p1 /boot/firmware vfat defaults 0 0
-/dev/mmcblk0p2 / ext4 defaults 0 0
-EOF
-
 echo -e "\e[33mSetting accounts\e[m"
 echo "Adding user pi with password malina"
 chroot $MOUNTPOINT /bin/bash -c "useradd -s /bin/bash --user-group --create-home pi"
@@ -296,32 +281,33 @@ EOF
 echo -e "\e[33mSetting Read-Only OverlayFS\e[m"
 echo "Adding overlay module into initramfs-tools/modules"
 lineinfile ^overlay.* overlay $MOUNTPOINT/etc/initramfs-tools/modules
-
 echo "Disable OverlayFS by default (/boot/overlay.txt)"
 echo 0 > $MOUNTPOINT/boot/overlay.txt
-echo "Adding post-<update-initramfs> script"
-cat > $MOUNTPOINT/usr/local/sbin/update-initramfs-overlay << EOF
+
+echo "Adding update-initramfs wrapper script"
+if ! [ -f $MOUNTPOINT/usr/sbin/update-initramfs.orig ]; then mv -fv $MOUNTPOINT/usr/sbin/update-initramfs $MOUNTPOINT/usr/sbin/update-initramfs.orig; fi
+cat > $MOUNTPOINT/usr/local/sbin/update-initramfs << EOF
 #!/bin/bash
 set -e
 
 # update-initramfs
-/usr/sbin/update-initramfs -u
+/usr/sbin/update-initramfs.orig \$@
 
 # if youre generating/updating initramfs on overlay /, it will set root=overlay
 # in cmdline.txt and system wont survive reboot
-rootfs_device=$(grep " / " /etc/fstab | cut -d " " -f1)
+rootfs_device=\$(grep " / " /etc/fstab | cut -d " " -f1)
 sed -i "s\ root=overlay \ root=\$rootfs_device \g" /boot/firmware/cmdline.txt
 EOF
-chmod +x $MOUNTPOINT/usr/local/sbin/update-initramfs-overlay
+chmod +x $MOUNTPOINT/usr/local/sbin/update-initramfs
 
 echo "Adding initramfs 01-overlay init-bottom script"
 cat > $MOUNTPOINT/etc/initramfs-tools/scripts/init-bottom/01-overlay << EOF
 set -e
 PREREQ=""
 prereqs(){
-   echo "${PREREQ}"
+   echo "\${PREREQ}"
 }
-case "${1}" in
+case "\${1}" in
    prereqs)
       prereqs
       exit 0
@@ -359,8 +345,93 @@ fi
 EOF
 chmod +x $MOUNTPOINT/etc/initramfs-tools/scripts/init-bottom/01-overlay
 
+echo "Adding initramfs 01-firstrun init-premount script"
+echo "Adding vfat module into initramfs-tools/modules"
+lineinfile ^vfat.* vfat $MOUNTPOINT/etc/initramfs-tools/modules
+echo "Adding ext4 module into initramfs-tools/modules"
+lineinfile ^ext4.* ext4 $MOUNTPOINT/etc/initramfs-tools/modules
+
+cat > $MOUNTPOINT/etc/initramfs-tools/scripts/init-premount/01-firstrun << EOF
+set -e
+PREREQ=""
+prereqs(){
+   echo "\${PREREQ}"
+}
+case "\${1}" in
+   prereqs)
+      prereqs
+      exit 0
+      ;;
+esac
+
+echo "[FIRSTRUN] Getting first avaible ext4 formatted block device (/)"
+root_device=\$(blkid | grep ext4 | cut -d : -f1)
+echo "[FIRSTRUN] Root filesystem set to \$root_device"
+
+echo "[FIRSTRUN] Getting first avaible fat formatted block device (/boot/firmware)"
+boot_device=\$(blkid | grep vfat | cut -d : -f1)
+echo "[FIRSTRUN] Boot filesystem set to \$boot_device"
+
+echo "[FIRSTRUN] Grow up rootfs partition"
+if [ -b /dev/mmcblk0 ]; then 
+  growpart /dev/mmcblk0 2
+  resize2fs /dev/mmcblk0p2
+fi
+if [ -b /dev/mmcblk1 ]; then
+  growpart /dev/mmcblk1 2
+  resize2fs /dev/mmcblk1p2
+fi
+if [ -b /dev/sda ]; then
+  growpart /dev/sda 2
+  resize2fs /dev/sda2
+fi
+
+echo "[FIRSTRUN] Connecting \$root_device to folder /sysroot"
+mkdir -p /sysroot
+mount \$root_device /sysroot
+
+echo "[FIRSTRUN] Setting fstab"
+cat > /sysroot/etc/fstab << EOL
+\$boot_device /boot/firmware vfat defaults 0 0
+\$root_device / ext4 defaults 0 0
+EOL
+
+echo "[FIRSTRUN] Updating initramdisk at /sysroot"
+mount -v --bind /dev /sysroot/dev
+mount -v --bind /proc /sysroot/proc
+mount -v --bind /sys /sysroot/sys
+mount -v \$boot_device /sysroot/boot/firmware
+chroot /sysroot '/usr/sbin/update-initramfs -u'
+
+echo "[FIRSTRUN] Done, rebooting in 5 seconds"
+sleep 5 && reboot
+
+EOF
+chmod +x $MOUNTPOINT/etc/initramfs-tools/scripts/init-premount/01-firstrun
+
+cat > $MOUNTPOINT/etc/initramfs-tools/hooks/01-firstrun << EOF
+set -e
+PREREQ=""
+prereqs(){
+   echo "\${PREREQ}"
+}
+case "\${1}" in
+   prereqs)
+      prereqs
+      exit 0
+      ;;
+esac
+. /usr/share/initramfs-tools/hook-functions
+
+# Utils needed for growing up ext4 partition
+copy_exec growpart
+copy_exec e2fsprogs
+
+EOF
+chmod +x $MOUNTPOINT/etc/initramfs-tools/hooks/01-firstrun
+
 echo -e "\e[33mUpdating initramfs\e[m"
-chroot $MOUNTPOINT update-initramfs-overlay
+chroot $MOUNTPOINT update-initramfs -u
 
 echo -e "\e[33mDisconnecting partitions\e[m"
 umount -v $MOUNTPOINT/boot/firmware
