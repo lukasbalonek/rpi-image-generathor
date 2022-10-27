@@ -18,45 +18,25 @@ dd if=rpi-image-armel.img of=/dev/mmcblk0 status=progress
 or you can write `rpi-image-armel.img.xz` with software like \
 Rufus (https://rufus.ie/en/) or Raspberry Imager (https://www.raspberrypi.com/software/)
 
-### Grow system partition to fit SD card capacity
-Install packages for `resize2fs` and `growpart`:
-```
-apt -yq install e2fsprogs cloud-guest-utils
-```
-Grow partition:
-```
-growpart /dev/mmcblk0 2
-```
-Grow filesystem:
-```
-resize2fs /dev/mmcblk0p2
-```
-
 ### Good to know
 
 #### initramfs-update
-To update init ramdisk, use:
-```
-update-initramfs-overlay
-```
-instead of:
-```
-update-initramfs -u
-```
-because if you've got mounted `overlay on /`, `update-initramfs` will set `root=overlay`
-in `/boot/firmware/cmdline.txt` and your system will not boot until you change it to `root=/dev/mmcblk0p2`
+- If you've got mounted `overlay on /`, `update-initramfs` will set `root=overlay` in `/boot/firmware/cmdline.txt` \
+and your system will not boot until you change it back to your rootfs partition like `root=/dev/mmcblk0p2`
+- `update-initramfs` has been renamed to `update-initramfs.orig` and it has been replaced \
+with wrapper script that fixes `/boot/firmware/cmdline.txt` after `update-initramfs.orig [-u/-c -k all]`
 
 #### Read-Only ramdisk Overlay
 To enable Read-Only Ramdisk Overlay, use:
 ```
-echo 1 > /boot/overlay.txt
+echo 1 > /boot/firmware/overlay.txt
 ```
 To disable, use:
 ```
-echo 0 > /boot/overlay.txt
+echo 0 > /boot/firmware/overlay.txt
 ```
 
 ---
-**Tested on:** \
+**Image build tested on:** \
 5.10.0-18-amd64 #1 SMP Debian 5.10.140-1 (2022-09-02) - Debian GNU/Linux 11 (bullseye) \
 5.10.102.1-microsoft-standard-WSL2 #1 SMP Wed Mar 2 00:30:59 - Debian GNU/Linux bookworm/sid
