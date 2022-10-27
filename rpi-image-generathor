@@ -4,19 +4,20 @@ bh=/dev/null
 MOUNTPOINT=/tmp/rpi-image-build
 IMGSIZE=4096
 CPU_CORES=$(grep -c '^processor' /proc/cpuinfo)
+DEBOOTSTRAP_LOG="$MOUNTPOINT/debootstrap.log"
 APT_PREREQS="binfmt-support qemu-user-static debootstrap dosfstools xz-utils fdisk coreutils sed"
+APT_LOG="$MOUNTPOINT/apt.log"
 
+# exit if command doesnt exit successfully
 set -e
 
 function separathor {
         echo -e "\e[09m                                                            \e[m"
 }
-
 function error {
         echo -e "\e[31m$error_msg Quitting...\e[m"
         exit 1
 }
-
 function check_root {
         if ! [ $(id -u) -eq 0 ]; then
                 error_msg="You have to execute imageathor as root/sudo !"
@@ -25,7 +26,6 @@ function check_root {
 }
 
 function help {
-
         separathor
         echo -e "\e[1mRPi image generathor\e[m"
         echo "This script creates image for raspberry pi sd card with specified architecture"
@@ -36,31 +36,31 @@ function help {
         echo "[--arch=(armel|armhf|arm64)]"
         echo "[--imgname=<name of your image>]"
         echo "[--folder=<path where image should be stored>]"
+        echo "[--target-block-device=<block device where system will be installed>]"
+        echo "  For rpi1 its /dev/mmcblk0, for rpi4 its /dev/mmcblk1, if you intend to use USB flash disc it will be /dev/sda"
         echo
         echo -e "\e[1mWithout args specified, armel, rpi-image-\$arch.img and PWD are used.\e[m"
         echo
         echo -e "\e[1mExamples:\e[m"
-        echo -e "Make basic armel raspberry image"
-        echo -e "\e[3msudo rpi-image-generathor --arch=armel\e[m"
+        echo -e "Make basic armel raspberry image to be used on USB flash disc"
+        echo -e "\e[3msudo rpi-image-generathor --arch=armel --target-block-device=/dev/sda\e[m"
         echo
-        echo -e "Make basic arm64 raspberry image"
-        echo -e "\e[3msudo rpi-image-generathor --arch=arm64\e[m"
+        echo -e "Make basic arm64 raspberry image for rpi4 microSD card"
+        echo -e "\e[3msudo rpi-image-generathor --arch=arm64 --target-block-device=/dev/mmcblk1\e[m"
         echo
         echo -e "Make basic armhf raspberry image with name rpi3-image.img"
-        echo -e "\e[3msudo rpi-image-generathor --arch=armhf --imgname=rpi3-image.img\e[m"
+        echo -e "\e[3msudo rpi-image-generathor --arch=armhf --imgname=rpi3-image.img --target-block-device=/dev/mmcblk0\e[m"
         exit 0
         separathor
-
 }
-
 function lineinfile {
         # first arg is regexp, second line, third is file
         declare -i lif_replace=0
         grep -qE "$1" $3 || lif_replace=1
-        if [ $lif_replace -eq 1 ]; then
-                echo $2 >> $3
+        if [ $lif_replace -eq 1 ]; then 
+          echo $2 >> $3
         else
-                sed -i "s/$1/$2/g" $3
+          sed -i "s/$1/$2/g" $3
         fi
 }
 
@@ -82,6 +82,9 @@ for arg in $@; do
                 --folder=*)
                 folder=$(echo $arg | cut -d "=" -f2)
                 ;;
+                --target-block-device=*)
+                target_disk=$(echo $arg | cut -d "=" -f2)
+                ;;
                 --help) help
                 ;;
                 *) error_msg="Wrong parameter specified ! \e[mUse \e[1mrpi-image-generathor --help\e[m to get usage info."; error
@@ -89,54 +92,60 @@ for arg in $@; do
         esac
 done
 
+# Check if running as su
 check_root
-
 separathor
 echo -e " \e[92mWelcome to rpi-image-generathor ! \e[m"
 separathor
 
-if [ -z $arch ]; then
-        arch=armel
-        echo -e "\e[33mNo arch specified, setting to armel (RPi 1) \e[m"
+# Automatic parameter selection if arguments not passed
+if [ -z $arch ]; then arch=armel ; echo -e "\e[33mNo arch specified, setting to armel (RPi 1) \e[m" ; fi
+if [ -z $imgname ]; then imgname=rpi-image-$arch.img ; echo -e "\e[33mNo imgname specified, setting to $imgname \e[m" ; fi
+if [ -f $imgname ]; then error_msg="Image $imgname already exist, not overwriting !" ; error ; fi
+if [ -z $folder ]; then folder=$PWD; echo -e "\e[33mNo folder specified, setting to $folder \e[m" ; fi
+if [ -z $target_disk ]; then target_disk=/dev/mmcblk1 ; echo -e "\e[33mNo target-block-device specified, setting to $target_disk \e[m" ;
+  if [[ $target_disk == *"mmcblk"* ]]; then 
+    boot_partition=p1 ;
+    boot_partition_number=1 ; 
+    root_partition=p2 ; 
+    root_partition_number=2 ;
+  fi
+  if [[ $target_disk == *"sd"* ]]; then 
+    boot_partition=1 ;
+    boot_partition_number=1 ; 
+    root_partition=2 ;
+    root_partition_number=2 ;
+  fi
 fi
 
-if [ -z $imgname ]; then
-        imgname=rpi-image-$arch.img
-        echo -e "\e[33mNo imgname specified, setting to $imgname \e[m"
-fi
-
-if [ -f $imgname ]; then
-        error_msg="Image $imgname already exist, not overwriting !"
-        error
-fi
-
-if [ -z $folder ]; then
-        folder=$PWD
-        echo -e "\e[33mNo folder specified, setting to $folder \e[m"
-fi
-
+# Install packages needed for image build
 echo -e "\e[33mInstalling prerequisites\e[m"
-apt -yqq install $APT_PREREQS
+apt -yq install $APT_PREREQS 1>$bh
 
+# Register binary format handlers in binfmt_misc module (kernel must support it: Executable file formats  --->  <*> Kernel support for MISC binaries)
 echo -e "\e[33mRegistering arm architecture in binfmt\e[m"
 set +e
 echo ':arm:M::\x7fELF\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x28\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-arm-static:' > /proc/sys/fs/binfmt_misc/register
 echo ':aarch64:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\xb7\x00:\xff\xff\xff\xff\xff\xff\xff\xfc\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-aarch64-static:' > /proc/sys/fs/binfmt_misc/register
 set -e
 
+# Create raw image file
 echo -e "\e[33mCreating blank image\e[m"
 dd if=/dev/zero bs=1M count=$IMGSIZE status=progress of=$imgname
 
+# Disconnect all $imgname from loopback devices
 echo -e "\e[33mDisconnecting $imgname from loopback devices if connected\e[m"
 losetup --list | grep -q $imgname && \
   losetup -d $(losetup --list | grep $imgname | awk '{print $1}') || \
     echo "There are no loopback device assigned to image"
 
+# Connect $imgname to first avaible loopback device (/disk)
 echo -e "\e[33mConnecting image to loop device\e[m"
 losetup --partscan --find $imgname
 disk_device=$(losetup --list | grep $imgname | awk '{print $1}')
 echo "Disk device is: $disk_device"
 
+# Format disk (create dos partition table, fat32 and ext4 partitions)
 echo -e "\e[33mFormatting $disk_device\e[m"
 fdisk 1>$bh $disk_device << EOF
 o
@@ -154,20 +163,22 @@ p
 
 w
 EOF
-
 mkfs.vfat -F 32 "$disk_device"p1
 mkfs.ext4 -F "$disk_device"p2
 
+# Mount disk partitions
 echo -e "\e[33mConnecting partitions\e[m"
 mkdir -p $MOUNTPOINT
 mount -v "$disk_device"p2 $MOUNTPOINT
 mkdir -p $MOUNTPOINT/boot/firmware
 mount -v "$disk_device"p1 $MOUNTPOINT/boot/firmware
 
+# Prepare minimal system with debootstrap
 echo -e "\e[33mInstalling system with debootstrap - STAGE 1\e[m"
-debootstrap --variant=minbase --foreign --arch $arch stable $MOUNTPOINT http://deb.debian.org/debian
+debootstrap --variant=minbase --foreign --arch $arch stable $MOUNTPOINT http://deb.debian.org/debian 1>> "$DEBOOTSTRAP_LOG"
 
-echo -e "\e[33mCopying qemu-<arch>-static into $MOUNTPOINT/usr/bin to make chroot possible\e[m"
+# Copy qemu emulator binary to make chroot possible in foreign architecture
+echo -e "\e[33mCopying qemu-<arch>-static into $MOUNTPOINT/usr/bin/ \e[m"
 case $arch in
 armel|armhf)
 qemu_static_binary=qemu-arm-static
@@ -178,15 +189,18 @@ qemu_static_binary=qemu-aarch64-static
 esac
 cp -fv $(which $qemu_static_binary) $MOUNTPOINT/usr/bin/
 
+# Finish debootstrap system installing
 echo -e "\e[33mInstalling system with debootstrap - STAGE 2\e[m"
 mount -v --bind /proc $MOUNTPOINT/proc
 mount -v --bind /sys $MOUNTPOINT/sys
-chroot $MOUNTPOINT /debootstrap/debootstrap --second-stage
+chroot $MOUNTPOINT /debootstrap/debootstrap --second-stage 1>> "$DEBOOTSTRAP_LOG"
 
+# Setup APT package manager
 echo -e "\e[33mSetting APT\e[m"
 echo deb http://deb.debian.org/debian stable main contrib non-free > $MOUNTPOINT/etc/apt/sources.list
-chroot $MOUNTPOINT apt -yqq update
+chroot $MOUNTPOINT apt -yqq update 1>> "$APT_LOG"
 
+# Install linux kernel
 echo -e "\e[33mInstalling linux-image for $arch\e[m"
 case $arch in
 armel)
@@ -198,7 +212,7 @@ pkg_name=linux-image-armmp # linux-image-armmp - Linux for ARMv7 multiplatform c
 arm64) pkg_name=linux-image-arm64 # linux-image-arm64 - Linux for 64-bit ARMv8 machines 
 ;;
 esac
-chroot $MOUNTPOINT /bin/bash -c "declare -x DEBIAN_FRONTEND=noninteractive; apt install -yqq $pkg_name"
+chroot $MOUNTPOINT /bin/bash -c "declare -x DEBIAN_FRONTEND=noninteractive; apt install -yqq $pkg_name" 1>> "$APT_LOG"
 
 echo -e "\e[33mInstalling important packages\e[m"
 chroot $MOUNTPOINT /bin/bash -c "
@@ -211,9 +225,9 @@ chroot $MOUNTPOINT /bin/bash -c "
   cron `# process scheduling daemon` \
   iproute2 `# networking and traffic control tools` \
   ifupdown `# high level tools to configure network interfaces` \
-  fdisk `# collection of partitioning utilities`
-"
-
+  fdisk `# collection of partitioning utilities` \
+  parted `# disk partition manipulator`
+" 1>> "$APT_LOG"
 echo -e "\e[33mInstalling must-have packages\e[m"
 chroot $MOUNTPOINT /bin/bash -c "
   declare -x DEBIAN_FRONTEND=noninteractive; \
@@ -223,8 +237,9 @@ chroot $MOUNTPOINT /bin/bash -c "
   nano `# small, friendly text editor inspired by Pico` \
   e2fsprogs `# ext2/ext3/ext4 file system utilities` \
   cloud-guest-utils `# It contains growpart for resizing a partition during boot`
-"
+" 1>> "$APT_LOG"
 
+# Setup locales (language)
 echo -e "\e[33mSetting locales\e[m"
 echo LANGUAGE=en_US:en > $MOUNTPOINT/etc/default/locale
 echo LANG=en_US.UTF-8 >> $MOUNTPOINT/etc/default/locale
@@ -233,9 +248,11 @@ sed -i 's@.*# cs_CZ.UTF-8 UTF-8@cs_CZ.UTF-8 UTF-8@g' $MOUNTPOINT/etc/locale.gen
 sed -i 's@.*# en_US.UTF-8 UTF-8@en_US.UTF-8 UTF-8@g' $MOUNTPOINT/etc/locale.gen
 chroot $MOUNTPOINT locale-gen
 
+# Setup hostname to raspberry
 echo -e "\e[33mSetting hostname\e[m"
 echo raspberry > $MOUNTPOINT/etc/hostname
 
+# Create user pi with password "malina" and set root's pass to "linux"
 echo -e "\e[33mSetting accounts\e[m"
 echo "Adding user pi with password malina"
 chroot $MOUNTPOINT /bin/bash -c "useradd -s /bin/bash --user-group --create-home pi"
@@ -243,10 +260,12 @@ chroot $MOUNTPOINT /bin/bash -c "echo 'pi:malina' | chpasswd" ;
 echo "Setting root password to linux"
 chroot $MOUNTPOINT /bin/bash -c "echo 'root:linux' | chpasswd" ;
 
+# Setup sshd (ssh-server), allow root login even with password
 echo -e "\e[33mSetting sshd\e[m"
 mkdir -p $MOUNTPOINT/root/.ssh
 sed -i 's/^.*PermitRootLogin.*/PermitRootLogin yes/g' $MOUNTPOINT/etc/ssh/sshd_config
 
+# Setup network, disable IPv6 by default, set eth0 autoconfig
 echo -e "\e[33mSetting network\e[m"
 echo "Disable IPv6"
 echo 'net.ipv6.conf.eth0.disable_ipv6 = 1' > $MOUNTPOINT/etc/sysctl.d/99-disable-ipv6.conf
@@ -256,6 +275,7 @@ auto eth0
 iface eth0 inet dhcp
 EOF
 
+# Set timezone and NTP timesync with systemd-timesyncd
 echo -e "\e[33mSetting time (Prague - CZ timezone, NTP)\e[m"
 ln -snfr $MOUNTPOINT/usr/share/zoneinfo/Europe/Prague $MOUNTPOINT/etc/localtime
 cat > $MOUNTPOINT/etc/systemd/timesyncd.conf << EOF
@@ -267,10 +287,12 @@ PollIntervalMinSec=60
 EOF
 chroot $MOUNTPOINT /bin/bash -c "systemctl unmask systemd-timesyncd ; systemctl enable systemd-timesyncd"
 
+# Create empty root's crontab
 echo -e "\e[33mSetting crontab\e[m"
 touch $MOUNTPOINT/var/spool/cron/crontabs/root
 chmod 0600 $MOUNTPOINT/var/spool/cron/crontabs/root
 
+# Set /etc/issue to display some useful informations
 echo -e "\e[33mSetting console message (/etc/issue)\e[m"
 cat > $MOUNTPOINT/etc/issue << EOF
 OS: \S (\l)
@@ -278,15 +300,41 @@ Hostname: \n
 IPv4: \4
 EOF
 
-echo -e "\e[33mSetting Read-Only OverlayFS\e[m"
+# Set fstab
+echo -e "\e[33mSetting /etc/fstab\e[m"
+cat > $MOUNTPOINT/etc/fstab << EOL
+$target_disk$boot_partition /boot/firmware vfat defaults 0 0
+$target_disk$root_partition / ext4 defaults 0 0
+EOL
+
+# Set initramfs-tools
+## ensure overlay module will be in initrd
 echo "Adding overlay module into initramfs-tools/modules"
 lineinfile ^overlay.* overlay $MOUNTPOINT/etc/initramfs-tools/modules
-echo "Disable OverlayFS by default (/boot/overlay.txt)"
-echo 0 > $MOUNTPOINT/boot/overlay.txt
 
+## ensure vfat module and dependencies are loaded in initrd
+echo "Adding vfat module into initramfs-tools/modules"
+lineinfile ^vfat.* vfat $MOUNTPOINT/etc/initramfs-tools/modules
+lineinfile ^nls_ascii.* nls_ascii $MOUNTPOINT/etc/initramfs-tools/modules
+lineinfile ^nls_cp437.* nls_cp437 $MOUNTPOINT/etc/initramfs-tools/modules
+
+## ensure ext4 module is loaded in initrd
+echo "Adding ext4 module into initramfs-tools/modules"
+lineinfile ^ext4.* ext4 $MOUNTPOINT/etc/initramfs-tools/modules
+
+# Setup read-only overlayfs
+echo -e "\e[33mSetting Read-Only OverlayFS\e[m"
+
+## disable this feature by default
+echo "Disable OverlayFS by default (/boot/firmware/overlay.txt)"
+echo 0 > $MOUNTPOINT/boot/firmware/overlay.txt
+
+## Rename original update-initramfs to update-initramfs.orig
 echo "Adding update-initramfs wrapper script"
 if ! [ -f $MOUNTPOINT/usr/sbin/update-initramfs.orig ]; then mv -fv $MOUNTPOINT/usr/sbin/update-initramfs $MOUNTPOINT/usr/sbin/update-initramfs.orig; fi
-cat > $MOUNTPOINT/usr/local/sbin/update-initramfs << EOF
+
+## Add wrapper script (script part must run after update-initramfs.orig, not possible to do this via hooks)
+cat > $MOUNTPOINT/usr/sbin/update-initramfs << EOF
 #!/bin/bash
 set -e
 
@@ -296,10 +344,11 @@ set -e
 # if youre generating/updating initramfs on overlay /, it will set root=overlay
 # in cmdline.txt and system wont survive reboot
 rootfs_device=\$(grep " / " /etc/fstab | cut -d " " -f1)
-sed -i "s\ root=overlay \ root=\$rootfs_device \g" /boot/firmware/cmdline.txt
+echo \$(cat /boot/firmware/cmdline.txt | tr ' ' '\n' | sed "s@^root=.*@root=\$rootfs_device@" | tr '\n' ' ') > /boot/firmware/cmdline.txt
 EOF
-chmod +x $MOUNTPOINT/usr/local/sbin/update-initramfs
+chmod +x $MOUNTPOINT/usr/sbin/update-initramfs
 
+## Add initrd script that will run system in read-only if /boot/firmware/overlay.txt contains 1
 echo "Adding initramfs 01-overlay init-bottom script"
 cat > $MOUNTPOINT/etc/initramfs-tools/scripts/init-bottom/01-overlay << EOF
 set -e
@@ -315,7 +364,15 @@ case "\${1}" in
 esac
 
 echo
-if [ \$(cat \${rootmnt}/boot/overlay.txt) -eq 1 ]; then
+
+boot_device=\$(blkid | grep vfat | cut -d : -f1)
+echo "[overlay] Boot filesystem set to \$boot_device"
+
+echo "[overlay] Mount boot partition \$boot_device"
+mkdir -p /boot/firmware
+mount \$boot_device /boot/firmware
+
+if [ \$(cat /boot/firmware/overlay.txt) -eq 1 ]; then
 
 echo -e "[overlay] Image is in Read-Only, executing overlayfs"
 
@@ -345,12 +402,10 @@ fi
 EOF
 chmod +x $MOUNTPOINT/etc/initramfs-tools/scripts/init-bottom/01-overlay
 
+# Add firstrun script to setup system at first boot (fstab, growpart ...)
 echo "Adding initramfs 01-firstrun init-premount script"
-echo "Adding vfat module into initramfs-tools/modules"
-lineinfile ^vfat.* vfat $MOUNTPOINT/etc/initramfs-tools/modules
-echo "Adding ext4 module into initramfs-tools/modules"
-lineinfile ^ext4.* ext4 $MOUNTPOINT/etc/initramfs-tools/modules
 
+## Add script to init-premount
 cat > $MOUNTPOINT/etc/initramfs-tools/scripts/init-premount/01-firstrun << EOF
 set -e
 PREREQ=""
@@ -364,51 +419,39 @@ case "\${1}" in
       ;;
 esac
 
-echo "[FIRSTRUN] Getting first avaible ext4 formatted block device (/)"
-root_device=\$(blkid | grep ext4 | cut -d : -f1)
-echo "[FIRSTRUN] Root filesystem set to \$root_device"
-
-echo "[FIRSTRUN] Getting first avaible fat formatted block device (/boot/firmware)"
-boot_device=\$(blkid | grep vfat | cut -d : -f1)
-echo "[FIRSTRUN] Boot filesystem set to \$boot_device"
+echo "[FIRSTRUN] Check root partition for errors"
+e2fsck -f $target_disk$root_partition
 
 echo "[FIRSTRUN] Grow up rootfs partition"
-if [ -b /dev/mmcblk0 ]; then 
-  growpart /dev/mmcblk0 2
-  resize2fs /dev/mmcblk0p2
-fi
-if [ -b /dev/mmcblk1 ]; then
-  growpart /dev/mmcblk1 2
-  resize2fs /dev/mmcblk1p2
-fi
-if [ -b /dev/sda ]; then
-  growpart /dev/sda 2
-  resize2fs /dev/sda2
-fi
+growpart $target_disk $root_partition_number
+partprobe
+resize2fs -f $target_disk$root_partition
 
-echo "[FIRSTRUN] Connecting \$root_device to folder /sysroot"
+echo "[FIRSTRUN] Connecting $target_disk$root_partition to folder /sysroot"
 mkdir -p /sysroot
-mount \$root_device /sysroot
+mount $target_disk$root_partition /sysroot
 
-echo "[FIRSTRUN] Setting fstab"
-cat > /sysroot/etc/fstab << EOL
-\$boot_device /boot/firmware vfat defaults 0 0
-\$root_device / ext4 defaults 0 0
-EOL
-
-echo "[FIRSTRUN] Updating initramdisk at /sysroot"
+echo "[FIRSTRUN] Preparing chroot"
 mount -v --bind /dev /sysroot/dev
 mount -v --bind /proc /sysroot/proc
 mount -v --bind /sys /sysroot/sys
-mount -v \$boot_device /sysroot/boot/firmware
-chroot /sysroot '/usr/sbin/update-initramfs -u'
+mount -v $target_disk$boot_partition /sysroot/boot/firmware
 
-echo "[FIRSTRUN] Done, rebooting in 5 seconds"
-sleep 5 && reboot
+echo "[FIRSTRUN] Removing firstrun script and hook from initramfs-tools"
+rm -fv /sysroot/etc/initramfs-tools/scripts/init-premount/01-firstrun
+rm -fv /sysroot/etc/initramfs-tools/hooks/01-firstrun
+
+echo "[FIRSTRUN] Updating initramdisk at /sysroot"
+chroot /sysroot /bin/bash -c '/usr/sbin/update-initramfs -u'
+
+echo "[FIRSTRUN] Done"
+umount -v /sysroot/boot/firmware
+umount -v /sysroot/
 
 EOF
 chmod +x $MOUNTPOINT/etc/initramfs-tools/scripts/init-premount/01-firstrun
 
+## Add hook that copies growpart and e2fsprogs into initrd
 cat > $MOUNTPOINT/etc/initramfs-tools/hooks/01-firstrun << EOF
 set -e
 PREREQ=""
@@ -424,26 +467,34 @@ esac
 . /usr/share/initramfs-tools/hook-functions
 
 # Utils needed for growing up ext4 partition
-copy_exec growpart
-copy_exec e2fsprogs
+copy_exec \$(which growpart)
+copy_exec \$(which sfdisk)
+copy_exec \$(which resize2fs)
+copy_exec \$(which e2fsck)
+copy_exec \$(which parted)
 
 EOF
 chmod +x $MOUNTPOINT/etc/initramfs-tools/hooks/01-firstrun
 
+# Update initrd to apply all previous changes
 echo -e "\e[33mUpdating initramfs\e[m"
 chroot $MOUNTPOINT update-initramfs -u
 
+# Disconnect boot and system partition
 echo -e "\e[33mDisconnecting partitions\e[m"
 umount -v $MOUNTPOINT/boot/firmware
 umount -v $MOUNTPOINT
 
+# Disconnect loop device (disk) assigned to the $imgname
 echo -e "\e[33mDisconnecting image from loop device\e[m"
 losetup -d $disk_device
 
+# Compress with xz maximum compression level using all cpu_cores
 echo -e "\e[33mCompressing image with xz\e[m"
 xz --compress -9 --threads=$CPU_CORES $imgname
 
-echo -e "\e[33mRemoving build folders\e[m"
+# Remove build folder
+echo -e "\e[33mRemoving build folder\e[m"
 mount | grep $MOUNTPOINT && declare -i exit_value=0 || declare -i exit_value=1
 if [ $exit_value -eq 0 ]; then
         error_msg="Something failed to unmount ! Not removing build folders: $MOUNTPOINT"
@@ -452,6 +503,7 @@ else
         rm -rfv rpi-image-build
 fi
 
+# If target folder points to PWD, do not move image
 if [ "$PWD/"$imgname".xz" == "$folder/"$imgname".xz" ]; then
   echo -e "\e[32mImage is already in destination dir...\e[m"
 else
