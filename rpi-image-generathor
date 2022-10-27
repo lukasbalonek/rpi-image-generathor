@@ -103,19 +103,18 @@ if [ -z $arch ]; then arch=armel ; echo -e "\e[33mNo arch specified, setting to 
 if [ -z $imgname ]; then imgname=rpi-image-$arch.img ; echo -e "\e[33mNo imgname specified, setting to $imgname \e[m" ; fi
 if [ -f $imgname ]; then error_msg="Image $imgname already exist, not overwriting !" ; error ; fi
 if [ -z $folder ]; then folder=$PWD; echo -e "\e[33mNo folder specified, setting to $folder \e[m" ; fi
-if [ -z $target_disk ]; then target_disk=/dev/mmcblk1 ; echo -e "\e[33mNo target-block-device specified, setting to $target_disk \e[m" ;
-  if [[ $target_disk == *"mmcblk"* ]]; then 
-    boot_partition=p1 ;
-    boot_partition_number=1 ; 
-    root_partition=p2 ; 
-    root_partition_number=2 ;
-  fi
-  if [[ $target_disk == *"sd"* ]]; then 
-    boot_partition=1 ;
-    boot_partition_number=1 ; 
-    root_partition=2 ;
-    root_partition_number=2 ;
-  fi
+if [ -z $target_disk ]; then target_disk=/dev/mmcblk1 ; echo -e "\e[33mNo target-block-device specified, setting to $target_disk \e[m" ; fi
+if [[ $target_disk == *"mmcblk"* ]]; then 
+  boot_partition=p1 ;
+  boot_partition_number=1 ; 
+  root_partition=p2 ; 
+  root_partition_number=2 ;
+fi
+if [[ $target_disk == *"sd"* ]]; then 
+  boot_partition=1 ;
+  boot_partition_number=1 ; 
+  root_partition=2 ;
+  root_partition_number=2 ;
 fi
 
 # Install packages needed for image build
@@ -194,6 +193,13 @@ echo -e "\e[33mInstalling system with debootstrap - STAGE 2\e[m"
 mount -v --bind /proc $MOUNTPOINT/proc
 mount -v --bind /sys $MOUNTPOINT/sys
 chroot $MOUNTPOINT /debootstrap/debootstrap --second-stage 1>> "$DEBOOTSTRAP_LOG"
+
+# Set fstab
+echo -e "\e[33mSetting /etc/fstab\e[m"
+cat > $MOUNTPOINT/etc/fstab << EOL
+$target_disk$boot_partition /boot/firmware vfat defaults 0 0
+$target_disk$root_partition / ext4 defaults 0 0
+EOL
 
 # Setup APT package manager
 echo -e "\e[33mSetting APT\e[m"
@@ -299,13 +305,6 @@ OS: \S (\l)
 Hostname: \n
 IPv4: \4
 EOF
-
-# Set fstab
-echo -e "\e[33mSetting /etc/fstab\e[m"
-cat > $MOUNTPOINT/etc/fstab << EOL
-$target_disk$boot_partition /boot/firmware vfat defaults 0 0
-$target_disk$root_partition / ext4 defaults 0 0
-EOL
 
 # Set initramfs-tools
 ## ensure overlay module will be in initrd
@@ -445,7 +444,7 @@ echo "[FIRSTRUN] Updating initramdisk at /sysroot"
 chroot /sysroot /bin/bash -c '/usr/sbin/update-initramfs -u'
 
 echo "[FIRSTRUN] Done"
-umount -v /sysroot/boot/firmware
+umount -v /sysroot/dev /sysroot/proc /sysroot/sys /sysroot/boot/firmware
 umount -v /sysroot/
 
 EOF
