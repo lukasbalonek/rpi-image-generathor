@@ -5,7 +5,7 @@ MOUNTPOINT=/tmp/rpi-image-build
 IMGSIZE=4096
 CPU_CORES=$(grep -c '^processor' /proc/cpuinfo)
 DEBOOTSTRAP_LOG="$MOUNTPOINT/debootstrap.log"
-APT_PREREQS="binfmt-support qemu-user-static debootstrap dosfstools xz-utils fdisk coreutils sed"
+APT_PREREQS="binfmt-support qemu-user-static debootstrap dosfstools xz-utils fdisk e2fsprogs coreutils sed"
 APT_LOG="$MOUNTPOINT/apt.log"
 
 # exit if command doesnt exit successfully
@@ -36,20 +36,18 @@ function help {
         echo "[--arch=(armel|armhf|arm64)]"
         echo "[--imgname=<name of your image>]"
         echo "[--folder=<path where image should be stored>]"
-        echo "[--target-block-device=<block device where system will be installed>]"
-        echo "  For rpi1 its /dev/mmcblk0, for rpi4 its /dev/mmcblk1, if you intend to use USB flash disc it will be /dev/sda"
         echo
         echo -e "\e[1mWithout args specified, armel, rpi-image-\$arch.img and PWD are used.\e[m"
         echo
         echo -e "\e[1mExamples:\e[m"
         echo -e "Make basic armel raspberry image to be used on USB flash disc"
-        echo -e "\e[3msudo rpi-image-generathor --arch=armel --target-block-device=/dev/sda\e[m"
+        echo -e "\e[3msudo rpi-image-generathor --arch=armel \e[m"
         echo
         echo -e "Make basic arm64 raspberry image for rpi4 microSD card"
-        echo -e "\e[3msudo rpi-image-generathor --arch=arm64 --target-block-device=/dev/mmcblk1\e[m"
+        echo -e "\e[3msudo rpi-image-generathor --arch=arm64 \e[m"
         echo
         echo -e "Make basic armhf raspberry image with name rpi3-image.img"
-        echo -e "\e[3msudo rpi-image-generathor --arch=armhf --imgname=rpi3-image.img --target-block-device=/dev/mmcblk0\e[m"
+        echo -e "\e[3msudo rpi-image-generathor --arch=armhf --imgname=rpi3-image.img \e[m"
         exit 0
         separathor
 }
@@ -103,19 +101,6 @@ if [ -z $arch ]; then arch=armel ; echo -e "\e[33mNo arch specified, setting to 
 if [ -z $imgname ]; then imgname=rpi-image-$arch.img ; echo -e "\e[33mNo imgname specified, setting to $imgname \e[m" ; fi
 if [ -f $imgname ]; then error_msg="Image $imgname already exist, not overwriting !" ; error ; fi
 if [ -z $folder ]; then folder=$PWD; echo -e "\e[33mNo folder specified, setting to $folder \e[m" ; fi
-if [ -z $target_disk ]; then target_disk=/dev/mmcblk1 ; echo -e "\e[33mNo target-block-device specified, setting to $target_disk \e[m" ; fi
-if [[ $target_disk == *"mmcblk"* ]]; then 
-  boot_partition=p1 ;
-  boot_partition_number=1 ; 
-  root_partition=p2 ; 
-  root_partition_number=2 ;
-fi
-if [[ $target_disk == *"sd"* ]]; then 
-  boot_partition=1 ;
-  boot_partition_number=1 ; 
-  root_partition=2 ;
-  root_partition_number=2 ;
-fi
 
 # Install packages needed for image build
 echo -e "\e[33mInstalling prerequisites\e[m"
@@ -162,8 +147,15 @@ p
 
 w
 EOF
+
+# Format partitions
 mkfs.vfat -F 32 "$disk_device"p1
 mkfs.ext4 -F "$disk_device"p2
+
+# Label partitions 
+fatlabel /dev/loop0p1 RASPIFIRM
+e2label /dev/loop0p2 RASPIROOT
+blkid "$disk_device"*
 
 # Mount disk partitions
 echo -e "\e[33mConnecting partitions\e[m"
@@ -174,7 +166,7 @@ mount -v "$disk_device"p1 $MOUNTPOINT/boot/firmware
 
 # Prepare minimal system with debootstrap
 echo -e "\e[33mInstalling system with debootstrap - STAGE 1\e[m"
-debootstrap --variant=minbase --foreign --arch $arch stable $MOUNTPOINT http://deb.debian.org/debian 1>> "$DEBOOTSTRAP_LOG"
+debootstrap --variant=minbase --foreign --arch $arch sid $MOUNTPOINT http://deb.debian.org/debian 1>> "$DEBOOTSTRAP_LOG"
 
 # Copy qemu emulator binary to make chroot possible in foreign architecture
 echo -e "\e[33mCopying qemu-<arch>-static into $MOUNTPOINT/usr/bin/ \e[m"
@@ -197,13 +189,14 @@ chroot $MOUNTPOINT /debootstrap/debootstrap --second-stage 1>> "$DEBOOTSTRAP_LOG
 # Set fstab
 echo -e "\e[33mSetting /etc/fstab\e[m"
 cat > $MOUNTPOINT/etc/fstab << EOL
-$target_disk$boot_partition /boot/firmware vfat defaults 0 0
-$target_disk$root_partition / ext4 defaults 0 0
+LABEL=RASPIFIRM /boot/firmware vfat defaults 0 0
+LABEL=RASPIROOT / ext4 defaults 0 0
 EOL
 
 # Setup APT package manager
 echo -e "\e[33mSetting APT\e[m"
-echo deb http://deb.debian.org/debian stable main contrib non-free > $MOUNTPOINT/etc/apt/sources.list
+echo deb http://deb.debian.org/debian sid main contrib non-free > $MOUNTPOINT/etc/apt/sources.list
+echo deb http://deb.debian.org/debian stable main contrib non-free >> $MOUNTPOINT/etc/apt/sources.list
 chroot $MOUNTPOINT apt -yqq update 1>> "$APT_LOG"
 
 # Install linux kernel
@@ -306,6 +299,10 @@ Hostname: \n
 IPv4: \4
 EOF
 
+## Set raspi-firmware setting
+echo "Setting /etc/default/raspi-firmware defaults"
+sed -i -E "s/^#ROOTPART=.*|^ROOTPART=.*/ROOTPART=LABEL=RASPIROOT/g" $MOUNTPOINT/etc/default/raspi-firmware
+
 # Set initramfs-tools
 ## ensure overlay module will be in initrd
 echo "Adding overlay module into initramfs-tools/modules"
@@ -327,25 +324,6 @@ echo -e "\e[33mSetting Read-Only OverlayFS\e[m"
 ## disable this feature by default
 echo "Disable OverlayFS by default (/boot/firmware/overlay.txt)"
 echo 0 > $MOUNTPOINT/boot/firmware/overlay.txt
-
-## Rename original update-initramfs to update-initramfs.orig
-echo "Adding update-initramfs wrapper script"
-if ! [ -f $MOUNTPOINT/usr/sbin/update-initramfs.orig ]; then mv -fv $MOUNTPOINT/usr/sbin/update-initramfs $MOUNTPOINT/usr/sbin/update-initramfs.orig; fi
-
-## Add wrapper script (script part must run after update-initramfs.orig, not possible to do this via hooks)
-cat > $MOUNTPOINT/usr/sbin/update-initramfs << EOF
-#!/bin/bash
-set -e
-
-# update-initramfs
-/usr/sbin/update-initramfs.orig \$@
-
-# if youre generating/updating initramfs on overlay /, it will set root=overlay
-# in cmdline.txt and system wont survive reboot
-rootfs_device=\$(grep " / " /etc/fstab | cut -d " " -f1)
-echo \$(cat /boot/firmware/cmdline.txt | tr ' ' '\n' | sed "s@^root=.*@root=\$rootfs_device@" | tr '\n' ' ') > /boot/firmware/cmdline.txt
-EOF
-chmod +x $MOUNTPOINT/usr/sbin/update-initramfs
 
 ## Add initrd script that will run system in read-only if /boot/firmware/overlay.txt contains 1
 echo "Adding initramfs 01-overlay init-bottom script"
@@ -418,23 +396,30 @@ case "\${1}" in
       ;;
 esac
 
+boot_part=\$(blkid | grep RASPIFIRM | cut -d : -f1)
+root_part=\$(blkid | grep RASPIROOT | cut -d : -f1)
+
+if [ -b /dev/mmcblk0 ]; then disk=/dev/mmcblk0 ; fi
+if [ -b /dev/mmcblk1 ]; then disk=/dev/mmcblk1 ; fi
+if [ -b /dev/sda ]; then disk=/dev/sda ; fi
+
 echo "[FIRSTRUN] Check root partition for errors"
-e2fsck -f $target_disk$root_partition
+e2fsck -f \$root_part
 
 echo "[FIRSTRUN] Grow up rootfs partition"
-growpart $target_disk $root_partition_number
+growpart \$disk 2
 partprobe
-resize2fs -f $target_disk$root_partition
+resize2fs -f \$root_part
 
-echo "[FIRSTRUN] Connecting $target_disk$root_partition to folder /sysroot"
+echo "[FIRSTRUN] Connecting \$root_part to folder /sysroot"
 mkdir -p /sysroot
-mount $target_disk$root_partition /sysroot
+mount \$root_part /sysroot
 
 echo "[FIRSTRUN] Preparing chroot"
 mount -v --bind /dev /sysroot/dev
 mount -v --bind /proc /sysroot/proc
 mount -v --bind /sys /sysroot/sys
-mount -v $target_disk$boot_partition /sysroot/boot/firmware
+mount -v \$boot_part /sysroot/boot/firmware
 
 echo "[FIRSTRUN] Removing firstrun script and hook from initramfs-tools"
 rm -fv /sysroot/etc/initramfs-tools/scripts/init-premount/01-firstrun
@@ -470,6 +455,7 @@ copy_exec \$(which growpart)
 copy_exec \$(which sfdisk)
 copy_exec \$(which resize2fs)
 copy_exec \$(which e2fsck)
+copy_exec \$(which flock)
 copy_exec \$(which parted)
 
 EOF
