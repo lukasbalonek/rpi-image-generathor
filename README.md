@@ -18,14 +18,6 @@ dd if=rpi-image-armel.img of=/dev/mmcblk0 status=progress
 or you can write `rpi-image-armel.img.xz` with software like \
 Rufus (https://rufus.ie/en/) or Raspberry Imager (https://www.raspberrypi.com/software/)
 
-### Good to know
-
-#### initramfs-update
-- If you've got mounted `overlay on /`, `update-initramfs` will set `root=overlay` in `/boot/firmware/cmdline.txt` \
-and your system will not boot until you change it back to your rootfs partition like `root=/dev/mmcblk0p2`
-- `update-initramfs` has been renamed to `update-initramfs.orig` and it has been replaced \
-with wrapper script that fixes `/boot/firmware/cmdline.txt` after `update-initramfs.orig [-u/-c -k all]`
-
 #### Read-Only ramdisk Overlay
 To enable Read-Only Ramdisk Overlay, use:
 ```
