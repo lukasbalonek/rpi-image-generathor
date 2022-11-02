@@ -32,3 +32,6 @@ echo 0 > /boot/firmware/overlay.txt
 **Image build tested on:** \
 5.10.0-18-amd64 #1 SMP Debian 5.10.140-1 (2022-09-02) - Debian GNU/Linux 11 (bullseye) \
 5.10.102.1-microsoft-standard-WSL2 #1 SMP Wed Mar 2 00:30:59 - Debian GNU/Linux bookworm/sid
+
+**Known issues:** \
+/dev/cec0 and /dev/cec1 doesnt exist on RPi4 B 4GB, no hdmi output after initramdisk on bookworm
