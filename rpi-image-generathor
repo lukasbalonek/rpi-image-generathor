@@ -166,7 +166,7 @@ mount -v "$disk_device"p1 $MOUNTPOINT/boot/firmware
 
 # Prepare minimal system with debootstrap
 echo -e "\e[33mInstalling system with debootstrap - STAGE 1\e[m"
-debootstrap --variant=minbase --foreign --arch $arch sid $MOUNTPOINT http://deb.debian.org/debian 1>> "$DEBOOTSTRAP_LOG"
+debootstrap --variant=minbase --foreign --arch $arch stable $MOUNTPOINT http://deb.debian.org/debian 1>> "$DEBOOTSTRAP_LOG"
 
 # Copy qemu emulator binary to make chroot possible in foreign architecture
 echo -e "\e[33mCopying qemu-<arch>-static into $MOUNTPOINT/usr/bin/ \e[m"
@@ -195,8 +195,7 @@ EOL
 
 # Setup APT package manager
 echo -e "\e[33mSetting APT\e[m"
-echo deb http://deb.debian.org/debian sid main contrib non-free > $MOUNTPOINT/etc/apt/sources.list
-echo deb http://deb.debian.org/debian stable main contrib non-free >> $MOUNTPOINT/etc/apt/sources.list
+echo deb http://deb.debian.org/debian stable main contrib non-free > $MOUNTPOINT/etc/apt/sources.list
 chroot $MOUNTPOINT apt -yqq update 1>> "$APT_LOG"
 
 # Install linux kernel
